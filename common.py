@@ -5,7 +5,7 @@
 """
 
 import os
-import multiprocessing
+import multiprocessing as mp
 
 import pylab
 import numpy as np
@@ -13,7 +13,9 @@ import pandas as pd
 
 from sklearn.metrics import get_scorer
 
-NCPU = multiprocessing.cpu_count() - 1
+import xgboost as xgb
+
+NCPU = mp.cpu_count() - 1
 
 
 def save_output(data, labels):
@@ -46,20 +48,30 @@ def find_corr_features_mask(matr, trashhold=0.9):
     return corr_mask
 
 
-def cross_val_score_with_weights(estimator_cls, x, y, w, scoring, cv, params):
-    scores = []
-    scorer = get_scorer(scoring)
-    for train_ind, test_ind in cv:
-        estimator = estimator_cls(**params)
-        estimator.fit(x[train_ind], y[train_ind], w[train_ind])
+def _calc_score(kwargs):
+    cv_num = kwargs["cv_num"]+1
+    print("{0} fold is running".format(cv_num))
+    kwargs["estimator"].fit(kwargs["x_train"], kwargs["y_train"], kwargs["w"])
+    score = kwargs["scorer"](kwargs["estimator"], kwargs["x_test"], kwargs["y_test"])
+    print("{0} fold score - {1}".format(cv_num, score))
+    return score
 
-        if scoring in ["roc_auc"]:
-            y_pred = estimator.predict_proba(x[test_ind])[:, 1]
-        else:
-            y_pred = estimator.predict(x[test_ind])[:, 1]
-        scores.append(scorer(y[test_ind], y_pred))
-    return np.array(scorer)
+
+def cross_val_score_with_weights(estimator, x, y, w, scoring, cv):
+    scorer = get_scorer(scoring)
+
+    args = []
+    for cv_num, inds in enumerate(cv):
+        train_ind, test_ind = inds
+        arg_set = {"cv_num": cv_num, "x_train": x[train_ind], "x_test": x[test_ind], "y_train": y[train_ind],
+                   "y_test": y[test_ind], "w": w[train_ind], "estimator": estimator, "scorer": scorer}
+        args.append(arg_set)
+
+    with mp.Pool(NCPU) as pool:
+        scores = pool.map(_calc_score, args)
+    return np.array(scores)
 
 
 if __name__ == '__main__':
-    pass
+    import xgboost
+
