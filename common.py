@@ -13,9 +13,7 @@ import pandas as pd
 
 from sklearn.metrics import get_scorer
 
-import xgboost as xgb
-
-NCPU = mp.cpu_count() - 1
+NCPU = mp.cpu_count() - 2
 
 
 def save_output(data, labels):
