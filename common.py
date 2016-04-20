@@ -72,4 +72,5 @@ def cross_val_score_with_weights(estimator, x, y, w, scoring, cv):
 
 if __name__ == '__main__':
     import xgboost
+    import hyperopt
 
