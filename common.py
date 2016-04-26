@@ -5,13 +5,16 @@
 """
 
 import os
+import collections
 import multiprocessing as mp
 
 import pylab
 import numpy as np
 import pandas as pd
+import hyperopt
 
 from sklearn.metrics import get_scorer
+from sklearn.cross_validation import StratifiedKFold, cross_val_score
 
 NCPU = mp.cpu_count() - 2
 
@@ -46,6 +49,14 @@ def find_corr_features_mask(matr, trashhold=0.9):
     return corr_mask
 
 
+def get_most_important_features(estimator, columns):
+    most_important_features = collections.OrderedDict()
+    scores = reversed(sorted(estimator._Booster.get_fscore().items(), key=lambda x: x[1]))
+    for feature_key, score in scores:
+        most_important_features[columns[int(feature_key[1:])]] = score
+    return most_important_features
+
+
 def _calc_score(kwargs):
     cv_num = kwargs["cv_num"]+1
     print("{0} fold is running".format(cv_num))
@@ -70,7 +81,68 @@ def cross_val_score_with_weights(estimator, x, y, w, scoring, cv):
     return np.array(scores)
 
 
+class HyperoptTester:
+
+    def __init__(self, estimator_factory, opt_space, random_state, nf_test=5, nf_val=5):
+        self.estimator_factory = estimator_factory
+        self.opt_space = opt_space
+        self.random_state = random_state
+        self.nf_test = nf_test
+        self.nf_val = nf_val
+
+        self.counter = 0
+        self.opt_params = {k: [0, {}] for k in range(self.nf_test)}
+
+    def optimize(self, x, y, scoring, max_evals=100):
+        scorer = get_scorer(scoring)
+        test_cv = StratifiedKFold(y, n_folds=self.nf_test, shuffle=True, random_state=self.random_state)
+        for num_test_step, indexes in enumerate(test_cv):
+            val_index, test_index = indexes
+            val_x = x[val_index]
+            val_y = y[val_index]
+
+            trials = hyperopt.Trials()
+            self.counter = 0
+            opt_fun = self.make_opt_fun(val_x, val_y, scoring, num_test_step)
+            hyperopt.fmin(opt_fun, self.opt_space, algo=hyperopt.tpe.suggest, max_evals=max_evals, trials=trials)
+
+        scores = []
+        for num_cv_step, indexes in enumerate(test_cv):
+            val_index, test_index = indexes
+            val_x, test_x = x[val_index], x[test_index]
+            val_y, test_y = y[val_index], y[test_index]
+
+            cv_part_scores = []
+            for num_test_step in range(self.nf_test):
+                print("num_cv_step - {0}, num_test_step - {1}".format(num_cv_step, num_test_step))
+                estimator = self.estimator_factory(**self.opt_params[num_test_step][1])
+                estimator.fit(val_x, val_y)
+                score = scorer(estimator, test_x, test_y)
+                cv_part_scores.append(score)
+            scores.append(cv_part_scores)
+        return np.array(scores)
+
+    def make_opt_fun(self, val_x, val_y, scoring, num_test_step):
+        val_cv = StratifiedKFold(val_y, n_folds=self.nf_val, shuffle=True, random_state=self.random_state)
+
+        def hyperopt_train_test(params):
+            estimator = self.estimator_factory(**params)
+            return cross_val_score(estimator, val_x, val_y, scoring=scoring, cv=val_cv, n_jobs=NCPU, verbose=1).mean()
+
+        def opt_fun(params):
+            acc = hyperopt_train_test(params)
+            if acc > self.opt_params[num_test_step][0]:
+                self.opt_params[num_test_step][0] = acc
+                self.opt_params[num_test_step][1] = params
+                print("new best score - {0}, best params - {1}, num test step - {2}".format(acc, params, num_test_step))
+
+            print("iters - {0}, num test step - {1}".format(self.counter, num_test_step))
+            self.counter += 1
+            return {"loss": -acc, "status": hyperopt.STATUS_OK}
+
+        return opt_fun
+
 if __name__ == '__main__':
     import xgboost
-    import hyperopt
+
 
